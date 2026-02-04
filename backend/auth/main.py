@@ -1,11 +1,11 @@
-from typing import Union
-
 from fastapi import FastAPI
-from router import citizen
+from routes import citizen, admin, employee
 
 app = FastAPI()
 
 app.include_router(citizen.router)
+app.include_router(employee.router)
+app.include_router(admin.router)
 
 @app.get("/")
 async def root():

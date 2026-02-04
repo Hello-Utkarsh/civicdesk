@@ -1,5 +1,6 @@
-from sqlmodel import Field, SQLModel, create_engine
+from sqlmodel import SQLModel, create_engine
 from dotenv import load_dotenv
+from .models import Employee
 import os
 
 load_dotenv()
