@@ -6,7 +6,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr
 from db.database import engine
 from sqlmodel import Session, select
-from db.models import Admin, Employee, Status
+from db.models import Admin, Employee, Jurisdiction, Status
 from passlib.hash import pbkdf2_sha256
 import os
 from dotenv import load_dotenv
@@ -52,11 +52,12 @@ async def verify_admin(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Not Authorized"
         )
-    admin = session.exec(select(Admin).where(Admin.id == jwt_data["id"])).all()
+    admin = session.exec(select(Admin).where(Admin.id == jwt_data["id"])).first()
     if not admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Not Authorized"
         )
+    return admin
 
 
 @router.post("/login")
@@ -65,14 +66,14 @@ async def login(
     email: EmailStr = Body(embed=True),
     password: str = Body(embed=True),
 ):
-    admin_data = session.exec(select(Admin).where(Admin.email == email)).all()
-    is_verified = pbkdf2_sha256.verify(password, admin_data[0].password)
+    admin_data = session.exec(select(Admin).where(Admin.email == email)).first()
+    is_verified = pbkdf2_sha256.verify(password, admin_data.password)
     if not is_verified:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password"
         )
     payload = {
-        "id": str(admin_data[0].id),
+        "id": str(admin_data.id),
         "role": "admin",
         "exp": datetime.datetime.now() + datetime.timedelta(days=7),
         "iat": datetime.datetime.now(),
@@ -82,8 +83,8 @@ async def login(
     return {
         "message": "logged in successfully",
         "auth-token": token,
-        "name": admin_data[0].name,
-        "status": admin_data[0].status,
+        "name": admin_data.name,
+        "status": admin_data.status,
     }
 
 
@@ -102,11 +103,22 @@ async def create_admin(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cannot onboard more admins",
         )
+    jurisdiction = session.exec(
+        select(Jurisdiction)
+        .where(Jurisdiction.name == "India")
+        .where(Jurisdiction.type == "country")
+    ).first()
+    if not jurisdiction:
+        jurisdiction = Jurisdiction(name="india", type="country")
+        session.add(jurisdiction)
+        session.commit()
+        session.refresh()
     hashed_password = pbkdf2_sha256.hash(admin_data.admin_password)
     admin = Admin(
         email=admin_data.email,
         password=hashed_password,
         name=admin_data.name,
+        jurisdiction_id=jurisdiction.id,
     )
     session.add(admin)
     session.commit()
@@ -137,9 +149,7 @@ async def onboard_employee(
     employee_data: EmployeeCreate,
     admin=Depends(verify_admin),
 ):
-    employee = Employee(
-        email=employee_data.email, role=employee_data.role, lvl=employee_data.lvl
-    )
+    employee = Employee(email=employee_data.email, role=employee_data.role)
     session.add(employee)
     session.commit()
     return {"message": "Employee Onboarded successfully"}
@@ -183,34 +193,66 @@ async def delete_employee(
     return {"message": "employee deleted successfully"}
 
 
-@router.post("/manage-role")
-async def create_role(role: str, lvl: int):
-    if not role or not lvl:
+@router.post("/manage-jurisdiction")
+async def create_juris(
+    session: Annotated[Session, Depends(get_session)],
+    name: str = Body(embed=True),
+    juris_type: str = Body(embed=True),
+    admin=Depends(verify_admin),
+):
+    juris = Jurisdiction(
+        name=name.lower(), type=juris_type.lower(), parent_id=admin.jurisdiction_id
+    )
+    session.add(juris)
+    session.commit()
+    return {"message": "Jurisdiction created successfully"}
+
+
+@router.delete("/manage-jurisdiction")
+async def delete_role(
+    session: Annotated[Session, Depends(get_session)],
+    name: str = Body(embed=True),
+    juris_type: str = Body(embed=True),
+    admin=Depends(verify_admin),
+):
+    juris = session.exec(
+        select(Jurisdiction)
+        .where(Jurisdiction.name == name.lower())
+        .where(Jurisdiction.type == juris_type.lower())
+    ).first()
+    if not juris:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Missing role or lvl"
+            status_code=status.HTTP_404_NOT_FOUND, detail="no such jurisdiction found"
         )
-    # create the role if it does not alrwady exists in the db
+    session.delete(juris)
+    session.commit()
 
 
-@router.delete("/manage-role")
-async def delete_role(role: str, lvl: int):
-    if not role or not lvl:
+@router.put("/manage-jurisdiction")
+async def update_role(
+    session: Annotated[Session, Depends(get_session)],
+    name: str = Body(embed=True),
+    juris_type: str = Body(embed=True),
+    admin=Depends(verify_admin),
+):
+    juris = session.exec(
+        select(Jurisdiction)
+        .where(Jurisdiction.name == name.lower())
+        .where(Jurisdiction.type == juris_type.lower())
+    ).first()
+    if not juris:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Missing role or lvl"
+            status_code=status.HTTP_404_NOT_FOUND, detail="no such jurisdiction found"
         )
-    # delete the role if it does not alrwady exists in the db
-
-
-@router.put("/manage-role")
-async def update_role(role: str, lvl: int):
-    if not role or not lvl:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Missing role or lvl"
-        )
+    juris.name = name
+    juris.type = juris_type
+    session.add(juris)
+    session.commit()
     # update the role if it does not alrwady exists in the db
 
 
-@router.get("/manage-role")
-async def get_role():
+@router.get("/manage-jurisdiction")
+async def get_role(session: Annotated[Session, Depends(get_session)]):
+    juris = session.exec(select(Jurisdiction)).all()
     # gets all the roles
-    return
+    return {juris}

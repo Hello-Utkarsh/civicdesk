@@ -1,10 +1,12 @@
 from typing import Optional
+from sqlalchemy import Nullable
 from sqlmodel import Field, SQLModel
 from enum import Enum
 import uuid
 
+
 class Status(str, Enum):
-    DISABLED = "disable"
+    DISABLED = "disabled"
     ACTIVE = "active"
     PENDING = "pending"
 
@@ -13,7 +15,7 @@ class Citizen(SQLModel, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     name: str
     email: str | None = Field(default=None, unique=True)
-    mobile: int | None = Field(default=None, unique=True)
+    mobile: str | None = Field(default=None, unique=True)
 
 
 class Admin(SQLModel, table=True):
@@ -22,6 +24,7 @@ class Admin(SQLModel, table=True):
     email: str = Field(unique=True)
     password: str
     status: Status = Field(default=Status.ACTIVE)
+    jurisdiction_id: uuid.UUID = Field(foreign_key="jurisdiction.id")
 
 
 class Employee(SQLModel, table=True):
@@ -30,7 +33,20 @@ class Employee(SQLModel, table=True):
     email: str = Field(unique=True)
     password: Optional[str] = Field(default=None)
     role: str | None = Field(default=None)
-    lvl: int | None = Field(default=None)
     status: Status = Field(default=Status.PENDING)
+    jurisdiction_id: uuid.UUID = Field(foreign_key="jurisdiction.id")
+    department_id: uuid.UUID = Field(foreign_key="department.id")
 
-    # eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY0MmZjZTJmLTM1ZTItNDY5OC04MTI2LTZjOWM4Nzk1YTVhMiIsInJvbGUiOiJhZG1pbiIsImV4cCI6MTc3MDgzODgxMywiaWF0IjoxNzcwMjM0MDEzfQ.02YPqSboeHgiE6nPw52ij_EunO8viBgR0_FjYwVQMAQ
+
+class Jurisdiction(SQLModel, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    name: str
+    type: str
+    parent_id: uuid.UUID | None = Field(default=None, foreign_key="jurisdiction.id")
+
+
+class Department(SQLModel, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    name: str  # "Electricity"
+    code: str  # "ELEC"
+    active: bool = True
