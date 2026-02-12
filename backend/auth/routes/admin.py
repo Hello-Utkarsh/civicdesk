@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr
+from sqlalchemy import true
 from db.database import engine
 from sqlmodel import Session, select
 from db.models import Admin, Employee, Jurisdiction, Status
@@ -33,7 +34,9 @@ class AdminCreate(BaseModel):
 class EmployeeCreate(BaseModel):
     email: EmailStr
     role: str
-    lvl: int
+    department: str = Body(embed=True)
+    jurisdiction_name: str = Body(embed=True)
+    jurisdiction_type: str = Body(embed=True)
 
 
 async def verify_admin(
@@ -60,7 +63,7 @@ async def verify_admin(
     return admin
 
 
-@router.post("/login")
+@router.post("/login")  # ✅
 async def login(
     session: Annotated[Session, Depends(get_session)],
     email: EmailStr = Body(embed=True),
@@ -88,7 +91,7 @@ async def login(
     }
 
 
-@router.post("/create-admin")
+@router.post("/create-admin")  # ✅
 async def create_admin(
     admin_data: AdminCreate, session: Annotated[Session, Depends(get_session)]
 ):
@@ -105,14 +108,13 @@ async def create_admin(
         )
     jurisdiction = session.exec(
         select(Jurisdiction)
-        .where(Jurisdiction.name == "India")
+        .where(Jurisdiction.name == "india")
         .where(Jurisdiction.type == "country")
     ).first()
     if not jurisdiction:
         jurisdiction = Jurisdiction(name="india", type="country")
         session.add(jurisdiction)
         session.commit()
-        session.refresh()
     hashed_password = pbkdf2_sha256.hash(admin_data.admin_password)
     admin = Admin(
         email=admin_data.email,
@@ -143,19 +145,70 @@ async def disable(
     return {"message": "Admin disabled successfully"}
 
 
-@router.post("/onboard-employee")
+@router.get("/get-direct-subordinates")  # ✅
+async def get_direct_subordinates(
+    session: Annotated[Session, Depends(get_session)], admin=Depends(verify_admin)
+):
+    results = session.exec(
+        select(
+            Employee.id,
+            Employee.name,
+            Employee.status,
+            Employee.department,
+            Employee.role,
+            Jurisdiction.name,
+            Jurisdiction.type,
+        )
+        .join(Jurisdiction)
+        .where(Jurisdiction.parent_id == admin.jurisdiction_id)
+    ).all()
+
+    direct_subordinates = [
+        {
+            "id": id,
+            "name": name,
+            "status": status,
+            "department": dept,
+            "role": role,
+            "jurisdiction_name": jur_name,
+            "Jurisdiction_type": jur_type,
+        }
+        for id, name, status, dept, role, jur_name, jur_type in results
+    ]
+    return {"direct-subordinates": [direct_subordinates]}
+
+
+@router.post("/onboard-employee")  # ✅
 async def onboard_employee(
     session: Annotated[Session, Depends(get_session)],
     employee_data: EmployeeCreate,
     admin=Depends(verify_admin),
 ):
-    employee = Employee(email=employee_data.email, role=employee_data.role)
+    jurisdiction_id = session.exec(
+        select(Jurisdiction)
+        .where(Jurisdiction.name == employee_data.jurisdiction_name.lower())
+        .where(Jurisdiction.type == employee_data.jurisdiction_type.lower())
+        .where(Jurisdiction.parent_id == admin.jurisdiction_id)
+    ).first()
+    if not jurisdiction_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="no such jurisdiction not found",
+        )
+    employee = Employee(
+        email=employee_data.email,
+        role=employee_data.role,
+        department=employee_data.department,
+        jurisdiction_id=jurisdiction_id.id,
+    )
     session.add(employee)
     session.commit()
     return {"message": "Employee Onboarded successfully"}
 
 
-@router.put("/toggle-employee-status")
+@router.put(
+    "/toggle-employee-status"
+)  # ✅
 async def disable_employee(
     session: Annotated[Session, Depends(get_session)],
     email: EmailStr = Body(embed=True),
@@ -166,24 +219,27 @@ async def disable_employee(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found"
         )
-    if employee.status == Status.ACTIVE or employee.status == Status.PENDING:
-        employee.status = Status.DISABLED
+    if (
+        employee.status == Status.ACTIVE.value
+        or employee.status == Status.PENDING.value
+    ):
+        employee.status = Status.DISABLED.value
     elif not employee.name:
-        employee.status = Status.PENDING
+        employee.status = Status.PENDING.value
     else:
-        employee.status = Status.ACTIVE
+        employee.status = Status.ACTIVE.value
     session.add(employee)
     session.commit()
-    return {"message": "status updated successfully"}
+    return {"message": f"status updated successfully to {employee.status}"}
 
 
-@router.delete("/delete-employee")
+@router.delete("/delete-employee")  # ✅
 async def delete_employee(
     session: Annotated[Session, Depends(get_session)],
     email: EmailStr = Body(embed=True),
     admin=Depends(verify_admin),
 ):
-    employee = session.exec(select(Employee).where(Employee.email == email))
+    employee = session.exec(select(Employee).where(Employee.email == email)).first()
     if not employee:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found"
@@ -193,7 +249,17 @@ async def delete_employee(
     return {"message": "employee deleted successfully"}
 
 
-@router.post("/manage-jurisdiction")
+@router.get("/manage-jurisdiction")  # ✅
+async def get_role(
+    session: Annotated[Session, Depends(get_session)], admin=Depends(verify_admin)
+):
+    juris = session.exec(
+        select(Jurisdiction).where(Jurisdiction.parent_id == admin.jurisdiction_id)
+    ).all()
+    return {"juris": juris}
+
+
+@router.post("/manage-jurisdiction")  # ✅
 async def create_juris(
     session: Annotated[Session, Depends(get_session)],
     name: str = Body(embed=True),
@@ -208,37 +274,16 @@ async def create_juris(
     return {"message": "Jurisdiction created successfully"}
 
 
-@router.delete("/manage-jurisdiction")
-async def delete_role(
-    session: Annotated[Session, Depends(get_session)],
-    name: str = Body(embed=True),
-    juris_type: str = Body(embed=True),
-    admin=Depends(verify_admin),
-):
-    juris = session.exec(
-        select(Jurisdiction)
-        .where(Jurisdiction.name == name.lower())
-        .where(Jurisdiction.type == juris_type.lower())
-    ).first()
-    if not juris:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="no such jurisdiction found"
-        )
-    session.delete(juris)
-    session.commit()
-
-
-@router.put("/manage-jurisdiction")
+@router.put("/manage-jurisdiction") # ✅
 async def update_role(
     session: Annotated[Session, Depends(get_session)],
+    jurisdiction_id: str = Body(embed=True),
     name: str = Body(embed=True),
     juris_type: str = Body(embed=True),
     admin=Depends(verify_admin),
 ):
     juris = session.exec(
-        select(Jurisdiction)
-        .where(Jurisdiction.name == name.lower())
-        .where(Jurisdiction.type == juris_type.lower())
+        select(Jurisdiction).where(Jurisdiction.id == jurisdiction_id)
     ).first()
     if not juris:
         raise HTTPException(
@@ -248,11 +293,22 @@ async def update_role(
     juris.type = juris_type
     session.add(juris)
     session.commit()
-    # update the role if it does not alrwady exists in the db
+    return {'message': 'jurisdiction updated successfully'}
 
 
-@router.get("/manage-jurisdiction")
-async def get_role(session: Annotated[Session, Depends(get_session)]):
-    juris = session.exec(select(Jurisdiction)).all()
-    # gets all the roles
-    return {juris}
+@router.delete("/manage-jurisdiction") # ✅
+async def delete_role(
+    session: Annotated[Session, Depends(get_session)],
+    jurisdiction_id: str = Body(embed=True),
+    admin=Depends(verify_admin),
+):
+    juris = session.exec(
+        select(Jurisdiction).where(Jurisdiction.id == jurisdiction_id)
+    ).first()
+    if not juris:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="no such jurisdiction found"
+        )
+    session.delete(juris)
+    session.commit()
+    return {"message": "jurisdiction deleted successfully"}
